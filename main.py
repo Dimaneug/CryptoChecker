@@ -13,16 +13,21 @@ explorers = {
     "Polygon": "polygonscan.com",
 }
 
+
+# Return date of row in table
 def get_date(row):
-    date = row.find("td", class_="showAge").span.get("title") # Arb, BSC
+    date = row.find("td", class_="showAge").span.get("title")  # Arb, BSC
     if date is None:
-        date = row.find("td", class_="showAge").span.get("data-bs-title") # ETH
+        date = row.find("td", class_="showAge").span.get("data-bs-title")  # ETH
     if date is None:
-        date = row.find("td", class_="showAge").span.get("data-original-title") # Polygon
+        date = row.find("td", class_="showAge").span.get(
+            "data-original-title"
+        )  # Polygon
 
     date = re.search(r"\d+\-\d+-\d+", date)[0]
     date = datetime.datetime.strptime(date, "%Y-%m-%d")
     return date
+
 
 # Getting fee of transaction in $
 # It takes tuple with row : bs4.Tag, month : int, network : str
@@ -52,7 +57,9 @@ def get_fee_from_tx_page(input_tuple):
 
 
 # Calculates how mush was spent on fees for a certain month
-def calculate_fees_multiprocs(network: str, wallet: str, start_date: datetime, end_date: datetime):
+def calculate_fees_multiprocs(
+    network: str, wallet: str, start_date: datetime, end_date: datetime
+):
     total_fees = 0
 
     for i in range(1, 100):
@@ -73,12 +80,14 @@ def calculate_fees_multiprocs(network: str, wallet: str, start_date: datetime, e
             break
         with mp.Pool() as p:
             page_fees = p.map(
-                get_fee_from_tx_page, [(row, network, start_date, end_date) for row in rows]
+                get_fee_from_tx_page,
+                [(row, network, start_date, end_date) for row in rows],
             )
         fees_on_page = sum([float(val) for val in page_fees])
-        total_fees += fees_on_page 
+        total_fees += fees_on_page
 
     return total_fees
+
 
 # Just a console clear
 def clear():
