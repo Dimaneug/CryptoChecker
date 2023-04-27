@@ -1,90 +1,63 @@
-from bs4 import BeautifulSoup, NavigableString
 import requests
-import re
-import multiprocessing.dummy as mp
 import os
-import datetime
+from datetime import datetime, timedelta
+from PyQt6.QtWidgets import (
+    QApplication,
+    QVBoxLayout,
+    QHBoxLayout,
+    QCheckBox,
+    QPushButton,
+    QMainWindow,
+    QWidget,
+    QLineEdit,
+    QLabel,
+    QDateEdit,
+    QMessageBox,
+)
+import json
 
 # Dictionary with explorers' links
 explorers = {
-    "Arbitrum": "arbiscan.io",
-    "BSC": "bscscan.com",
-    "Ethereum": "etherscan.io",
-    "Polygon": "polygonscan.com",
+    "Ethereum": "api.etherscan.io",
 }
 
 
-# Return date of row in table
-def get_date(row):
-    date = row.find("td", class_="showAge").span.get("title")  # Arb, BSC
-    if date is None:
-        date = row.find("td", class_="showAge").span.get("data-bs-title")  # ETH
-    if date is None:
-        date = row.find("td", class_="showAge").span.get(
-            "data-original-title"
-        )  # Polygon
-
-    date = re.search(r"\d+\-\d+-\d+", date)[0]
-    date = datetime.datetime.strptime(date, "%Y-%m-%d")
-    return date
-
-
-# Getting fee of transaction in $
-# It takes tuple with row : bs4.Tag, month : int, network : str
-def get_fee_from_tx_page(input_tuple):
-    row, network, start_date, end_date = input_tuple
-    date = get_date(row)
-    if not (start_date <= date and date <= end_date):
-        return 0
-    transaction_page_href = row.find("span", class_="hash-tag").a["href"]
-    transaction_page = requests.get(
-        "https://" + explorers[network] + transaction_page_href,
-        headers={"User-Agent": "Custom"},
-    )
-    transaction_page_soup = BeautifulSoup(transaction_page.text, "lxml")
-    fee = transaction_page_soup.find("button", {"id": "txfeebutton"})  # Arb, BSC
-    if fee is None:
-        fee = transaction_page_soup.find("a", {"id": "txfeebutton"})  # ETH
-    if fee is None:
-        fee = transaction_page_soup.find(
-            "span", {"id": "ContentPlaceHolder1_spanTxFee"}
-        )  # Polygon
-    if fee is None:
-        return 0
-    fee = fee.get_text()
-    fee = re.search(r"\$[0-9\.]+", fee)[0][1:]
-    return fee
-
-
-# Calculates how mush was spent on fees for a certain month
-def calculate_fees_multiprocs(
-    network: str, wallet: str, start_date: datetime, end_date: datetime
+# Calculates how mush was spent on fees for a certain time interval
+def calculate_fees(
+    network: str, api_key: str, wallet: str, start_date: datetime, end_date: datetime
 ):
     total_fees = 0
+    start_date = datetime.timestamp(start_date)
+    end_date = datetime.timestamp(end_date)
 
-    for i in range(1, 100):
-        html = requests.get(
-            "https://" + explorers[network] + "/txs?a=" + wallet + "&ps=10&p=" + str(i),
-            headers={"User-Agent": "Custom"},
-        )
-        soup = BeautifulSoup(html.text, "lxml")
-        table = soup.find("table", class_="table").tbody
-        rows = []
-        for row in table.children:
-            if not isinstance(row, NavigableString):
-                rows.append(row)
-        # check to skip unnecessary data
-        if get_date(rows[-1]) > end_date:
+    transactions = requests.get(
+        "https://"
+        + explorers[network]
+        + "/api?module=account&action=txlist&address="
+        + wallet
+        + "&sort=desc&offset=1000&apikey="
+        + api_key,
+        headers={"User-Agent": "Custom"},
+    )
+    transactions = json.loads(transactions.text)
+    current_price = [0, 0]  # 0 - timestamp, 1 - price
+    for transaction in transactions["result"]:
+        tx_date = int(transaction["timeStamp"])
+        if tx_date > end_date:
             continue
-        if get_date(rows[0]) < start_date:
+        if tx_date < start_date:
             break
-        with mp.Pool() as p:
-            page_fees = p.map(
-                get_fee_from_tx_page,
-                [(row, network, start_date, end_date) for row in rows],
+        if tx_date > current_price[0] + 3599 or tx_date < current_price[0]:
+            price_data = requests.get(
+                "https://min-api.cryptocompare.com/data/v2/histohour?fsym=ETH&tsym=USD&limit=1&toTs="
+                + str(tx_date)
             )
-        fees_on_page = sum([float(val) for val in page_fees])
-        total_fees += fees_on_page
+            price_data = json.loads(price_data.text)["Data"]["Data"][1]
+            current_price[0] = int(price_data["time"])
+            current_price[1] = float(price_data["high"])
+        current_fee = int(transaction["gasPrice"]) * int(transaction["gasUsed"])
+        current_fee = current_fee * 10 ** (-18) * current_price[1]
+        total_fees += current_fee
 
     return total_fees
 
@@ -97,43 +70,77 @@ def clear():
         os.system("clear")
 
 
-# Interface function
-def interface():
-    networks_list = []
-    while 1:
-        clear()
-        for i, network in enumerate(explorers.keys(), 1):
-            print(f"{i}. {network}")
-            networks_list.append(network)
-        try:
-            network = input("Choose network (q for exit): ")
-            if network == "q":
-                break
-            network = int(network)
-        except:
-            print("You should write number of network!")
-            wait = input()
-            continue
-        try:
-            start_date = input("Write start date (Y-M-D): ")
-            start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        except:
-            print("You should write date in format Y-M-D!")
-            wait = input()
-            continue
-        try:
-            end_date = input("Write end date (Y-M-D): ")
-            end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d")
-        except:
-            print("You should write date in format Y-M-D!")
-            wait = input()
-            continue
-        wallet = input("Write wallet address: ")
-        print(
-            f"Total fees: ${calculate_fees_multiprocs(networks_list[network-1], wallet, start_date, end_date)}"
-        )
-        wait = input()
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Fees Checker")
+        self.setGeometry(10, 10, 400, 150)
+
+        widget = QWidget()
+
+        api_key_layout = QHBoxLayout()
+        api_key_lbl = QLabel("API Key:")
+        self.api_key = QLineEdit()
+        self.api_key.setMaximumWidth(310)
+        api_key_layout.addWidget(api_key_lbl)
+        api_key_layout.addWidget(self.api_key)
+
+        wallet_layout = QHBoxLayout()
+        wallet_lbl = QLabel("Wallet")
+        self.wallet = QLineEdit()
+        self.wallet.setMaximumWidth(310)
+        wallet_layout.addWidget(wallet_lbl)
+        wallet_layout.addWidget(self.wallet)
+
+        self.ethereum = QCheckBox("Ethereum")
+        self.bsc = QCheckBox("BSC")
+
+        start_date_layout = QHBoxLayout()
+        start_date_lbl = QLabel("Start Date")
+        self.start_date = QDateEdit(calendarPopup=True)
+        self.start_date.setDate(datetime.today() - timedelta(days=1))
+        start_date_layout.addWidget(start_date_lbl)
+        start_date_layout.addWidget(self.start_date)
+
+        end_date_layout = QHBoxLayout()
+        end_date_lbl = QLabel("End Date")
+        self.end_date = QDateEdit(calendarPopup=True)
+        self.end_date.setDate(datetime.today())
+        end_date_layout.addWidget(end_date_lbl)
+        end_date_layout.addWidget(self.end_date)
+
+        self.confirm_button = QPushButton("Confirm")
+        self.confirm_button.clicked.connect(self.btn_confirm_pushed)
+
+        layout = QVBoxLayout()
+        layout.addLayout(api_key_layout)
+        layout.addLayout(wallet_layout)
+        layout.addWidget(self.ethereum)
+        layout.addLayout(start_date_layout)
+        layout.addLayout(end_date_layout)
+        layout.addWidget(self.confirm_button)
+        widget.setLayout(layout)
+        self.setCentralWidget(widget)
+
+    def btn_confirm_pushed(self):
+        total_fees = 0
+        if self.ethereum.isChecked():
+            total_fees += calculate_fees(
+                self.ethereum.text(),
+                self.api_key.text(),
+                self.wallet.text(),
+                self.start_date.dateTime().toPyDateTime(),
+                self.end_date.dateTime().toPyDateTime(),
+            )
+        msg = QMessageBox()
+        msg.setWindowTitle("Total fees")
+        msg.setText(f"${total_fees:.2f}")
+        msg.exec()
 
 
 if __name__ == "__main__":
-    interface()
+    app = QApplication([])
+    ex = MainWindow()
+    ex.show()
+    app.exec()
